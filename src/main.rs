@@ -5,6 +5,42 @@ use bevy::window::{PrimaryWindow, Window, WindowPlugin};
 const WINDOW_WIDTH: f32 = 900.;
 const WINDOW_HEIGHT: f32 = 600.;
 
+// Grid: 80 columns x 40 rows; world spans [-400,400] x [-200,200]
+const GRID_WIDTH: u32 = 80;
+const GRID_HEIGHT: u32 = 40;
+const WORLD_WIDTH: f32 = 800.;
+const WORLD_HEIGHT: f32 = 400.;
+
+fn cell_width() -> f32 {
+    WORLD_WIDTH / GRID_WIDTH as f32
+}
+fn cell_height() -> f32 {
+    WORLD_HEIGHT / GRID_HEIGHT as f32
+}
+
+/// World position to grid cell (col, row). Clamped to grid bounds.
+fn world_to_cell(world_pos: Vec2) -> (u32, u32) {
+    let ox = world_pos.x + WORLD_WIDTH / 2.0;
+    let oy = world_pos.y + WORLD_HEIGHT / 2.0;
+    let cw = cell_width();
+    let ch = cell_height();
+    let col = (ox / cw).floor() as i32;
+    let row = (oy / ch).floor() as i32;
+    let col = col.clamp(0, GRID_WIDTH as i32 - 1) as u32;
+    let row = row.clamp(0, GRID_HEIGHT as i32 - 1) as u32;
+    (col, row)
+}
+
+/// Center of the cell in world coordinates.
+fn cell_center(col: u32, row: u32) -> Vec2 {
+    let cw = cell_width();
+    let ch = cell_height();
+    Vec2::new(
+        -WORLD_WIDTH / 2.0 + (col as f32 + 0.5) * cw,
+        -WORLD_HEIGHT / 2.0 + (row as f32 + 0.5) * ch,
+    )
+}
+
 const TOWER_RANGE: f32 = 120.;
 const TOWER_FIRE_RATE: f32 = 0.7; // seconds
 const BULLET_SPEED: f32 = 400.;
@@ -22,6 +58,9 @@ struct Tower {
 }
 
 #[derive(Component)]
+struct TowerCell(u32, u32);
+
+#[derive(Component)]
 struct Bullet {
     target: Entity,
     damage: f32,
@@ -29,8 +68,17 @@ struct Bullet {
 
 #[derive(Resource)]
 struct Path {
-    points: Vec<Vec2>,
+    /// Orthogonal path as grid cells (consecutive cells differ by 1 in col or row).
+    cells: Vec<(u32, u32)>,
+    /// World positions of path cells (derived from cells for drawing and movement).
+    world_points: Vec<Vec2>,
 }
+
+#[derive(Resource)]
+struct ShowGrid(bool);
+
+#[derive(Component)]
+struct GridLine;
 
 fn main() {
     App::new()
@@ -47,17 +95,17 @@ fn main() {
                     ..default()
                 }),
         )
-        .insert_resource(Path {
-            points: vec![
-                Vec2::new(-400., -200.),
-                Vec2::new(-200., 0.),
-                Vec2::new(0., 80.),
-                Vec2::new(200., 0.),
-                Vec2::new(400., 200.),
-            ],
+        .insert_resource({
+            // Orthogonal path: row 20 right, then down, then right to end
+            let cells: Vec<(u32, u32)> = (0..=40).map(|c| (c, 20)).chain((21..=30).map(|r| (40, r))).chain((41..=79).map(|c| (c, 30))).collect();
+            let world_points: Vec<Vec2> = cells.iter().map(|&(c, r)| cell_center(c, r)).collect();
+            Path { cells, world_points }
         })
+        .insert_resource(ShowGrid(true))
         .add_systems(Startup, setup)
+        .add_systems(Startup, spawn_grid_lines)
         .add_systems(Update, (
+            toggle_grid_visibility,
             spawn_enemy_periodic,
             enemy_follow_path,
             tower_shooting,
@@ -73,7 +121,7 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
     commands.spawn(Camera2dBundle::default());
 
     // Draw path lines (simple circles at points + lines)
-    for p in &path.points {
+    for p in &path.world_points {
         commands.spawn(MaterialMesh2dBundle {
             mesh: meshes.add(shape::Circle::new(8.).into()).into(),
             material: mats.add(ColorMaterial::from(Color::rgb(0.9, 0.8, 0.4))),
@@ -81,7 +129,7 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
             ..default()
         });
     }
-    for window in path.points.windows(2) {
+    for window in path.world_points.windows(2) {
         let a = window[0];
         let b = window[1];
         let dir = b - a;
@@ -102,7 +150,7 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
 
     // UI hint: instructions
     commands.spawn(TextBundle::from_section(
-        "Click to place tower. Towers auto-shoot nearest enemy.",
+        "Click to place tower. G: toggle grid.",
         TextStyle {
             font_size: 16.0,
             color: Color::WHITE,
@@ -116,6 +164,63 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
     }));
 }
 
+const GRID_LINE_THICKNESS: f32 = 2.0;
+
+fn spawn_grid_lines(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<ColorMaterial>>,
+) {
+    let cw = cell_width();
+    let ch = cell_height();
+    let blue = mats.add(ColorMaterial::from(Color::rgb(0.2, 0.4, 0.8)));
+    let z = -1.0;
+
+    // Vertical lines: GRID_WIDTH + 1
+    let v_line = meshes.add(Mesh::from(shape::Quad::new(Vec2::new(GRID_LINE_THICKNESS, WORLD_HEIGHT))));
+    for c in 0..=GRID_WIDTH {
+        let x = -WORLD_WIDTH / 2.0 + c as f32 * cw;
+        commands.spawn((
+            MaterialMesh2dBundle {
+                mesh: v_line.clone().into(),
+                material: blue.clone(),
+                transform: Transform::from_translation(Vec3::new(x, 0., z)),
+                ..default()
+            },
+            GridLine,
+        ));
+    }
+
+    // Horizontal lines: GRID_HEIGHT + 1
+    let h_line = meshes.add(Mesh::from(shape::Quad::new(Vec2::new(WORLD_WIDTH, GRID_LINE_THICKNESS))));
+    for r in 0..=GRID_HEIGHT {
+        let y = -WORLD_HEIGHT / 2.0 + r as f32 * ch;
+        commands.spawn((
+            MaterialMesh2dBundle {
+                mesh: h_line.clone().into(),
+                material: blue.clone(),
+                transform: Transform::from_translation(Vec3::new(0., y, z)),
+                ..default()
+            },
+            GridLine,
+        ));
+    }
+}
+
+fn toggle_grid_visibility(
+    mut show_grid: ResMut<ShowGrid>,
+    mut query: Query<&mut Visibility, With<GridLine>>,
+    keys: Res<Input<KeyCode>>,
+) {
+    if keys.just_pressed(KeyCode::G) {
+        show_grid.0 = !show_grid.0;
+        let vis = if show_grid.0 { Visibility::Visible } else { Visibility::Hidden };
+        for mut v in query.iter_mut() {
+            *v = vis;
+        }
+    }
+}
+
 struct SpawnTimer(Timer);
 
 impl Default for SpawnTimer {
@@ -127,7 +232,7 @@ impl Default for SpawnTimer {
 fn spawn_enemy_periodic(mut commands: Commands, time: Res<Time>, mut timer: Local<SpawnTimer>, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<ColorMaterial>>, path: Res<Path>) {
     if timer.0.tick(time.delta()).finished() {
         // spawn enemy at first path point
-        let start = path.points[0];
+        let start = path.world_points[0];
         commands.spawn((
             MaterialMesh2dBundle {
                 mesh: meshes.add(shape::Circle::new(12.).into()).into(),
@@ -143,13 +248,13 @@ fn spawn_enemy_periodic(mut commands: Commands, time: Res<Time>, mut timer: Loca
 // Enemies follow the path points sequentially
 fn enemy_follow_path(mut query: Query<(Entity, &mut Transform, &mut Enemy)>, time: Res<Time>, path: Res<Path>, mut commands: Commands) {
     for (entity, mut transform, mut enemy) in query.iter_mut() {
-        if enemy.path_idx + 1 >= path.points.len() {
+        if enemy.path_idx + 1 >= path.world_points.len() {
             // reached end — despawn
             commands.entity(entity).despawn_recursive();
             continue;
         }
         let current = Vec2::new(transform.translation.x, transform.translation.y);
-        let target = path.points[enemy.path_idx + 1];
+        let target = path.world_points[enemy.path_idx + 1];
         let dir = (target - current).normalize_or_zero();
         let move_delta = dir * ENEMY_SPEED * time.delta_seconds();
         let new_pos = current + move_delta;
@@ -163,12 +268,14 @@ fn enemy_follow_path(mut query: Query<(Entity, &mut Transform, &mut Enemy)>, tim
     }
 }
 
-// Mouse click places a tower at cursor position
+// Mouse click places a tower at the grid cell under the cursor (path cells and occupied cells blocked).
 fn place_tower_on_click(
     mut commands: Commands,
     buttons: Res<Input<MouseButton>>,
     q_window: Query<&Window, With<PrimaryWindow>>,
     q_camera: Query<&Transform, With<Camera>>,
+    path: Res<Path>,
+    towers: Query<&TowerCell>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<ColorMaterial>>,
 ) {
@@ -176,22 +283,31 @@ fn place_tower_on_click(
         return;
     }
     let Ok(wnd) = q_window.get_single() else { return };
-    if let Some(screen_pos) = wnd.cursor_position() {
-        let cam_transform = q_camera.single();
-        // Convert screen -> world
-        let window_size = Vec2::new(wnd.width(), wnd.height());
-        let ndc = (screen_pos / window_size) * 2.0 - Vec2::ONE;
-        let world_pos = cam_transform.translation.truncate() + ndc * Vec2::new(window_size.x / 2.0, window_size.y / 2.0);
-        commands.spawn((
-            MaterialMesh2dBundle {
-                mesh: meshes.add(shape::Circle::new(14.).into()).into(),
-                material: mats.add(ColorMaterial::from(Color::rgb(0.2, 0.6, 0.9))),
-                transform: Transform::from_translation(Vec3::new(world_pos.x, world_pos.y, 2.)),
-                ..default()
-            },
-            Tower { timer: Timer::from_seconds(TOWER_FIRE_RATE, TimerMode::Repeating) },
-        ));
+    let Some(screen_pos) = wnd.cursor_position() else { return };
+    let cam_transform = q_camera.single();
+    let window_size = Vec2::new(wnd.width(), wnd.height());
+    let ndc = (screen_pos / window_size) * 2.0 - Vec2::ONE;
+    let world_pos = cam_transform.translation.truncate() + ndc * Vec2::new(window_size.x / 2.0, window_size.y / 2.0);
+
+    let (col, row) = world_to_cell(world_pos);
+    if path.cells.contains(&(col, row)) {
+        return; // no towers on path
     }
+    if towers.iter().any(|tc| tc.0 == col && tc.1 == row) {
+        return; // cell already occupied
+    }
+
+    let center = cell_center(col, row);
+    commands.spawn((
+        MaterialMesh2dBundle {
+            mesh: meshes.add(shape::Circle::new(14.).into()).into(),
+            material: mats.add(ColorMaterial::from(Color::rgb(0.2, 0.6, 0.9))),
+            transform: Transform::from_translation(Vec3::new(center.x, center.y, 2.)),
+            ..default()
+        },
+        Tower { timer: Timer::from_seconds(TOWER_FIRE_RATE, TimerMode::Repeating) },
+        TowerCell(col, row),
+    ));
 }
 
 // Towers find nearest enemy in range and spawn bullets
