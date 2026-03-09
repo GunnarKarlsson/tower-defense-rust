@@ -5,9 +5,9 @@ use bevy::window::{PrimaryWindow, Window, WindowPlugin};
 const WINDOW_WIDTH: f32 = 900.;
 const WINDOW_HEIGHT: f32 = 600.;
 
-// Grid: 80 columns x 40 rows; world spans [-400,400] x [-200,200]
-const GRID_WIDTH: u32 = 80;
-const GRID_HEIGHT: u32 = 40;
+// Grid: 60 columns x 30 rows; world spans [-400,400] x [-200,200]
+const GRID_WIDTH: u32 = 60;
+const GRID_HEIGHT: u32 = 30;
 const WORLD_WIDTH: f32 = 800.;
 const WORLD_HEIGHT: f32 = 400.;
 
@@ -96,8 +96,8 @@ fn main() {
                 }),
         )
         .insert_resource({
-            // Orthogonal path: row 20 right, then down, then right to end
-            let cells: Vec<(u32, u32)> = (0..=40).map(|c| (c, 20)).chain((21..=30).map(|r| (40, r))).chain((41..=79).map(|c| (c, 30))).collect();
+            // Orthogonal path: row 15 right, then down, then right to end (fits 60x30 grid)
+            let cells: Vec<(u32, u32)> = (0..=30).map(|c| (c, 15)).chain((16..=22).map(|r| (30, r))).chain((31..=59).map(|c| (c, 22))).collect();
             let world_points: Vec<Vec2> = cells.iter().map(|&(c, r)| cell_center(c, r)).collect();
             Path { cells, world_points }
         })
@@ -287,7 +287,11 @@ fn place_tower_on_click(
     let cam_transform = q_camera.single();
     let window_size = Vec2::new(wnd.width(), wnd.height());
     let ndc = (screen_pos / window_size) * 2.0 - Vec2::ONE;
-    let world_pos = cam_transform.translation.truncate() + ndc * Vec2::new(window_size.x / 2.0, window_size.y / 2.0);
+    // Cursor Y is top-down (0 at top); flip so screen top = high world Y (Bevy Y-up)
+    let world_pos = Vec2::new(
+        cam_transform.translation.x + ndc.x * (window_size.x / 2.0),
+        cam_transform.translation.y - ndc.y * (window_size.y / 2.0),
+    );
 
     let (col, row) = world_to_cell(world_pos);
     if path.cells.contains(&(col, row)) {
