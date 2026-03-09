@@ -2,14 +2,14 @@ use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
 use bevy::window::{PrimaryWindow, Window, WindowPlugin};
 
-const WINDOW_WIDTH: f32 = 900.;
-const WINDOW_HEIGHT: f32 = 600.;
+const WINDOW_WIDTH: f32 = 1350.;
+const WINDOW_HEIGHT: f32 = 900.;
 
-// Grid: 60 columns x 30 rows; world spans [-400,400] x [-200,200]
+// Grid: 60 columns x 30 rows; world spans [-600,600] x [-300,300]
 const GRID_WIDTH: u32 = 60;
 const GRID_HEIGHT: u32 = 30;
-const WORLD_WIDTH: f32 = 800.;
-const WORLD_HEIGHT: f32 = 400.;
+const WORLD_WIDTH: f32 = 1200.;
+const WORLD_HEIGHT: f32 = 600.;
 
 fn cell_width() -> f32 {
     WORLD_WIDTH / GRID_WIDTH as f32
